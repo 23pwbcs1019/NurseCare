@@ -120,4 +120,5 @@ app.post('/api/discharges/:id/finalize',allow('nurse_admin','charge_nurse'),wrap
  }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
 }));
 app.use((err,req,res,next)=>{console.error(err);res.status(err.status|| (err.name==='ZodError'?400:500)).json({error:err.name==='ZodError'?'Invalid request data':err.message||'Server error'});});
-const port=process.env.PORT||3000;app.listen(port,()=>console.log(`NurseCare Pro API listening on ${port}`));
+export default app;
+if(!process.env.VERCEL){const port=process.env.PORT||3000;app.listen(port,()=>console.log(`NurseCare Pro API listening on ${port}`));}

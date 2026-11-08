@@ -5,6 +5,7 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import argon2 from 'argon2';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 import { pool } from './db.js';
 import { auth, allow, signToken, encrypt, decrypt } from './security.js';
 import { audit } from './audit.js';
@@ -33,6 +34,28 @@ app.post('/api/auth/login', wrap(async (req,res) => {
   if(!r.rowCount || !(await argon2.verify(r.rows[0].password_hash,d.password))) return res.status(401).json({error:'Invalid credentials'});
   await pool.query('UPDATE users SET last_login_at=now(),failed_attempts=0 WHERE id=$1',[r.rows[0].id]);
   res.json({token:signToken(r.rows[0]),user:{id:r.rows[0].id,username:r.rows[0].username,role:r.rows[0].role}});
+}));
+app.post('/api/auth/signup', wrap(async (req,res) => {
+  const expected = process.env.NURSE_SIGNUP_KEY;
+  if (!expected) return res.status(403).json({error:'Nurse sign-up is not enabled'});
+  const data = z.object({fullName:z.string().trim().min(2).max(100),username:z.string().trim().min(3).max(60),password:z.string().min(12).max(200),signupKey:z.string().min(1).max(200)}).parse(req.body);
+  const digest = v => crypto.createHash('sha256').update(String(v)).digest();
+  if (!crypto.timingSafeEqual(digest(data.signupKey), digest(expected))) return res.status(403).json({error:'Invalid nurse secret key'});
+  const role = await pool.query("SELECT id FROM roles WHERE name='staff_nurse'");
+  if (!role.rowCount) return res.status(500).json({error:'Server is not set up correctly'});
+  const hash = await argon2.hash(data.password, {type:argon2.argon2id});
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const user = await c.query('INSERT INTO users(username,password_hash,role_id) VALUES($1,$2,$3) RETURNING id,username',[data.username,hash,role.rows[0].id]);
+    await c.query('INSERT INTO nurses(user_id,full_name) VALUES($1,$2)',[user.rows[0].id,data.fullName]);
+    await c.query('COMMIT');
+    res.status(201).json({user:{...user.rows[0],role:'staff_nurse'}, token:signToken({...user.rows[0],role:'staff_nurse'})});
+  } catch (e) {
+    await c.query('ROLLBACK');
+    if (e.code === '23505') return res.status(409).json({error:'That username is already taken'});
+    throw e;
+  } finally { c.release(); }
 }));
 app.use('/api',auth);
 
